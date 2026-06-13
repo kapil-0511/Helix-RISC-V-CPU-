@@ -1,17 +1,17 @@
 # =============================================================================
-# setup_project.tcl  —  ARIA-32  5-Stage Sequential Pipeline
+# setup_project.tcl  —  Helix  |  5-Stage Pipelined 32-bit CPU
 # =============================================================================
-# Works in BOTH Vivado Tcl console AND ModelSim / Questa.
-# Auto-detects the simulator at runtime.
+# Creates the Vivado project with all RTL and testbench sources configured
+# and ready for simulation. Does NOT compile or run any simulations.
 #
 # Vivado Tcl console:
 #   source C:/Users/kapily/Downloads/aria32_5stage/sim/setup_project.tcl
 #
-# ModelSim / Questa batch:
-#   vsim -c -do "source setup_project.tcl" -do "quit -f"
-#
-# ModelSim / Questa GUI console:
-#   do setup_project.tcl
+# Then simulate any TB manually:
+#   set_property top tb_cpu [get_filesets sim_1]
+#   launch_simulation
+#   run all
+#   close_simulation
 # =============================================================================
 
 set script_dir [file dirname [file normalize [info script]]]
@@ -20,11 +20,10 @@ set tb_dir     [file normalize [file join $script_dir .. tb]]
 
 puts ""
 puts "==================================================================="
-puts "  ARIA-32  5-Stage  |  Project Setup"
+puts "  Helix  |  5-Stage Pipelined CPU  |  Project Setup"
 puts "==================================================================="
 
 # ── Detect simulator ──────────────────────────────────────────────────────────
-# Vivado has create_project; ModelSim/Questa has vlib.
 if {[info commands create_project] ne ""} {
     set SIM_TOOL "vivado"
 } elseif {[info commands vlib] ne ""} {
@@ -41,16 +40,13 @@ puts "\[INFO\]  TB dir    : $tb_dir"
 puts ""
 
 # =============================================================================
-# ── VIVADO path ───────────────────────────────────────────────────────────────
+# ── VIVADO ────────────────────────────────────────────────────────────────────
 # =============================================================================
 if {$SIM_TOOL eq "vivado"} {
 
     set proj_dir [file normalize [file join $script_dir vivado_proj]]
-    puts "\[INFO\]  Project   : $proj_dir"
 
-    # Create project (xc7a35tcpg236-1 = Artix-7, free WebPACK — part is
-    # irrelevant for simulation but Vivado requires one)
-    create_project -force aria32_5stage $proj_dir -part xc7a35tcpg236-1
+    create_project -force helix $proj_dir -part xc7a35tcpg236-1
 
     set_property simulator_language Mixed         [current_project]
     set_property target_language   Verilog        [current_project]
@@ -69,12 +65,10 @@ if {$SIM_TOOL eq "vivado"} {
     ]
     add_files -fileset sources_1 $rtl_files
 
-    # defines.v is `included by other files — not a standalone compile unit.
-    # Marking it as a Verilog Header stops Vivado from compiling it solo.
+    # defines.v is `included by other files — mark as header to skip solo compile
     set_property file_type {Verilog Header} [get_files */defines.v]
-
     set_property include_dirs [list $rtl_dir] [get_filesets sources_1]
-    puts "\[INFO\]  RTL compiled OK (8 files)."
+    puts "\[INFO\]  RTL sources added (8 files)."
 
     # ── Testbenches ───────────────────────────────────────────────────────────
     set tb_files [list \
@@ -93,96 +87,25 @@ if {$SIM_TOOL eq "vivado"} {
         [file join $tb_dir tb_cpu.sv       ] \
     ]
     add_files -fileset sim_1 -norecurse $tb_files
-    foreach f $tb_files {
-        set_property file_type SystemVerilog [get_files $f]
-    }
+    set_property file_type SystemVerilog \
+        [get_files -of_objects [get_filesets sim_1] -filter {NAME =~ *.sv}]
     set_property include_dirs [list $rtl_dir] [get_filesets sim_1]
-
-    # Let TBs control termination via $finish — no forced xsim timeout
     set_property xsim.simulate.runtime "" [get_filesets sim_1]
-    puts "\[INFO\]  Testbenches added OK (12 files)."
+    set_property top     tb_cpu        [get_filesets sim_1]
+    set_property top_lib xil_defaultlib [get_filesets sim_1]
+    update_compile_order -fileset sim_1
+    puts "\[INFO\]  Testbenches added (13 files)."
 
     puts ""
     puts "==================================================================="
-    puts "  Setup complete (Vivado).  Run simulations with:"
-    puts "    source $script_dir/run_all.tcl"
-    puts ""
-    puts "  Or run one TB manually:"
-    puts "    set_property top tb_power \[get_filesets sim_1\]"
+    puts "  Helix  |  Project ready (Vivado)."
+    puts "  To simulate, pick a TB top and launch from the GUI or Tcl:"
+    puts "    set_property top tb_cpu \[get_filesets sim_1\]"
     puts "    launch_simulation"
     puts "    run all"
     puts "    close_simulation"
     puts "==================================================================="
 
-# =============================================================================
-# ── MODELSIM / QUESTA path ────────────────────────────────────────────────────
-# =============================================================================
-} else {
-
-    # ── Work library ──────────────────────────────────────────────────────────
-    if {[file exists work]} {
-        puts "\[INFO\]  Removing existing 'work' library..."
-        vdel -lib work -all
-    }
-    vlib work
-    vmap work work
-    puts "\[INFO\]  'work' library created."
-
-    # ── RTL sources ───────────────────────────────────────────────────────────
-    puts ""
-    puts "\[COMPILE\]  RTL sources..."
-    vlog -sv +incdir+$rtl_dir \
-        $rtl_dir/defines.v    \
-        $rtl_dir/alu.v        \
-        $rtl_dir/control.v    \
-        $rtl_dir/reg_file.v   \
-        $rtl_dir/cond_check.v \
-        $rtl_dir/data_mem.v   \
-        $rtl_dir/inst_mem.v   \
-        $rtl_dir/cpu_top.v
-
-    if {$errorCode ne "NONE"} {
-        puts "\[ERROR\]  RTL compilation failed. Stopping."
-        return
-    }
-    puts "\[INFO\]  RTL compiled OK (8 files)."
-
-    # ── Testbenches ───────────────────────────────────────────────────────────
-    puts ""
-    puts "\[COMPILE\]  Testbenches..."
-    vlog -sv +incdir+$rtl_dir   \
-        $tb_dir/tb_memcpy.sv    \
-        $tb_dir/tb_array_sum.sv \
-        $tb_dir/tb_minmax.sv    \
-        $tb_dir/tb_sort.sv      \
-        $tb_dir/tb_factorial.sv \
-        $tb_dir/tb_bitops.sv    \
-        $tb_dir/tb_gcd.sv       \
-        $tb_dir/tb_power.sv     \
-        $tb_dir/tb_isqrt.sv     \
-        $tb_dir/tb_collatz.sv   \
-        $tb_dir/tb_fibonacci.sv \
-        $tb_dir/tb_bsearch.sv   \
-        $tb_dir/tb_cpu.sv
-
-    if {$errorCode ne "NONE"} {
-        puts "\[ERROR\]  Testbench compilation failed. Stopping."
-        return
-    }
-    puts "\[INFO\]  Testbenches compiled OK (12 files)."
-
-    puts ""
-    puts "==================================================================="
-    puts "  Setup complete (ModelSim/Questa).  Run simulations with:"
-    puts "    source run_all.tcl"
-    puts "  Or individually:"
-    puts "    source run_memcpy.tcl   source run_array_sum.tcl"
-    puts "    source run_minmax.tcl   source run_sort.tcl"
-    puts "    source run_factorial.tcl source run_bitops.tcl"
-    puts "    source run_gcd.tcl      source run_power.tcl"
-    puts "    source run_isqrt.tcl    source run_collatz.tcl"
-    puts "    source run_fibonacci.tcl source run_bsearch.tcl"
-    puts "==================================================================="
 }
 
 puts ""
